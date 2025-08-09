@@ -64,6 +64,8 @@ int main(int argc, char** argv) {
 
     MPI_Finalize();
 
-    cout << "Best fitness: " << result << endl;
+    if (world_rank == 0) {
+        cout << "Final result: " << result << endl;
+    }
     // return result;
 }
