@@ -6,7 +6,7 @@
 #include "pso.h"
 #include "Solution.h"
 
-#define NUMPARTICLES 100
+#define NUMPARTICLES 500
 #define MAX_DELTA 0.00001
 //#define INF 3.40282347E+38F
 #define INF 1E+21
@@ -63,7 +63,7 @@ double PSO(
 
     if (world_rank > 0){
         for(int i = 0; i < elements_per_process; i++) {
-            cout << "Process: " << world_rank << " Init" << endl;
+            // cout << "Process: " << world_rank << " Init" << endl;
             population[i] = new double[dimension];
         }
         for(int i=0; i < elements_per_process; i++) {
@@ -80,7 +80,7 @@ double PSO(
         for(int i = 0; i<elements_per_process; i++){
             fitness[i] = objfun(population[i]);
         }
-        cout << "Process: " << world_rank << " fitness ok" << endl;
+        // cout << "Process: " << world_rank << " fitness ok" << endl;
 
         MPI_Send(
             fitness, 
@@ -132,7 +132,7 @@ double PSO(
                 for(int i=0; i<elements_per_process; i++){
                     fitness[i] = objfun(population[i]);
                 }
-                cout << "Process: " << world_rank << " fitness ok" << endl;
+                // cout << "Process: " << world_rank << " fitness ok" << endl;
             }
             else{
                 MPI_Recv(
@@ -147,7 +147,7 @@ double PSO(
                 for(int i=0; i<elements_per_process; i++){
                     fitness[i + (dest)*elements_per_process] = local_fitness[i];
                 }
-                cout << "Process: " << world_rank << " received fitness from process " << dest << endl;
+                // cout << "Process: " << world_rank << " received fitness from process " << dest << endl;
             }
         }
         for(int i=0; i<number_particles; i++){
@@ -157,25 +157,25 @@ double PSO(
                 for(j=0; j<dimension; j++){ best_global_position[j] = population[i][j]; }
             }
         }
-        cout << "Fitness vector: ";
-        for(int i = 0; i < number_particles; i++) {
-            cout << fitness[i] << " ";
-        }
-        cout << endl;
+        // cout << "Fitness vector: ";
+        // for(int i = 0; i < number_particles; i++) {
+        //     cout << fitness[i] << " ";
+        // }
+        // cout << endl;
         
         functionEvaluations += number_particles;
 
-        cout << "population ready..." << endl;
+        // cout << "population ready..." << endl;
     }
 
     MPI_Barrier(comm);
 
-    int maxEval = 1000;
+    int maxEval = dimension * 10;
     if(world_rank == 0) {
         cout << "COMECOU" <<  endl;
     }
     while(functionEvaluations < maxEval){
-        cout << "Process: " << world_rank << " we are in the loop" << endl;
+        // cout << "Process: " << world_rank << " we are in the loop" << endl;
         if (world_rank == 0) {
             weight = initialWeight - (initialWeight - finalWeight)*((double)functionEvaluations)/((double)maxEval);
 
@@ -214,7 +214,7 @@ double PSO(
                     for(int i=0; i<elements_per_process; i++){
                         fitness[i] = objfun(population[i]);
                     }
-                    cout << "Process: " << world_rank << " fitness ok" << endl;
+                    // cout << "Process: " << world_rank << " fitness ok" << endl;
                 }
                 else{
                     MPI_Recv(
@@ -229,14 +229,14 @@ double PSO(
                     for(int i=0; i<elements_per_process; i++){
                         fitness[i + (dest)*elements_per_process] = local_fitness[i];
                     }
-                    cout << "Process: " << world_rank << " received fitness from process " << dest << endl;
+                    // cout << "Process: " << world_rank << " received fitness from process " << dest << endl;
                 }
             }
-            cout << "Fitness vector: ";
-            for(int i = 0; i < number_particles; i++) {
-                cout << fitness[i] << " ";
-            }
-            cout << endl;
+            // cout << "Fitness vector: ";
+            // for(int i = 0; i < number_particles; i++) {
+            //     cout << fitness[i] << " ";
+            // }
+            // cout << endl;
             for(int i=0; i<number_particles; i++){
                 for(int j=0; j<dimension; j++){
                     if(fitness[i] < best_local_fitness[i]){
@@ -272,7 +272,7 @@ double PSO(
             for(int i = 0; i<elements_per_process; i++){
                 fitness[i] = objfun(population[i]);
             }
-            cout << "Process: " << world_rank << " fitness ok" << endl;
+            // cout << "Process: " << world_rank << " fitness ok" << endl;
 
             MPI_Send(
                 fitness, 
@@ -311,7 +311,7 @@ double PSO(
         delete []best_global_position;
     } 
     else {
-        cout << "Process: " << world_rank << " cleaning up..." << endl;
+        // cout << "Process: " << world_rank << " cleaning up..." << endl;
         for(i=0; i<elements_per_process; i++){
             delete []population[i];
         }

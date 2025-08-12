@@ -12,15 +12,26 @@
 #define asl cur_ASL
 
 #define SEED 6
+#define DIMENSION 10000
 
 using namespace std;
 
 
-double objfun(double *x){
-    // Example objective function: Sphere function
+// double objfun(double *x){
+//     // Example objective function: Sphere function
+//     double sum = 0.0;
+//     for(int i = 0; i < DIMENSION; i++) {
+//         sum += x[i] * x[i];
+//     }
+//     return sum;
+// }
+
+double objfun(double *x) {
     double sum = 0.0;
-    for(int i = 0; i < 2; i++) {
-        sum += x[i] * x[i];
+    for(int i=0; i < DIMENSION-1; i++) {
+        double sum_1 = (x[i]*x[i] - x[i+1]);
+        double sum_2 = (x[i] - 1);
+        sum += 100*sum_1*sum_1 + sum_2*sum_2;
     }
     return sum;
 }
@@ -37,10 +48,15 @@ int main(int argc, char** argv) {
     if (world_rank == 0) {
         std::cout << "Starting PSO..." << std::endl;
     }
-    double *lb = NULL;
-    double *ub = NULL;
+    double *lb = new double[DIMENSION];
+    double *ub = new double[DIMENSION];
 
-    int dimension = 2; // Example dimension'
+    for(int i = 0; i < DIMENSION; i++) {
+        lb[i] = -100.0; // Lower bound
+        ub[i] = 100.0;  // Upper bound
+    }
+
+    int dimension = DIMENSION;
     int seed = SEED;
     double IW = 0.9; // Initial weight
     double FW = 0.4; // Final weight
@@ -62,10 +78,10 @@ int main(int argc, char** argv) {
         MPI_COMM_WORLD // Pass the communicator
     );
 
-    MPI_Finalize();
-
     if (world_rank == 0) {
         cout << "Final result: " << result << endl;
     }
-    // return result;
+
+    MPI_Finalize();
+    return 0;
 }

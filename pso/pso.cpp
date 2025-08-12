@@ -5,7 +5,7 @@
 #include "pso.h"
 #include "Solution.h"
 
-#define NUMPARTICLES 1000
+#define NUMPARTICLES 500
 #define MAX_DELTA 0.00001
 //#define INF 3.40282347E+38F
 #define INF 1E+21
@@ -101,7 +101,7 @@ double PSO(
   best_particle->fitness = population[gbest]->fitness;
   for(j=0; j<dimension; j++){ best_particle->position[j] = population[gbest]->position[j];}
   
-  int iteracoes = 0, maxEval = 20000;
+  int iteracoes = 0, maxEval = dimension * 10;
   cout << "COMECOU" <<  endl;
   while(functionEvaluations < maxEval){
       bool successful = false;

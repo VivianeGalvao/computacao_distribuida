@@ -8,7 +8,7 @@
 #include "pso.h"
 #include "Solution.h"
 
-#define NUMPARTICLES 1000
+#define NUMPARTICLES 500
 #define MAX_DELTA 0.00001
 #define OMP_NUM_THREADS 2
 //#define INF 3.40282347E+38F
@@ -80,9 +80,10 @@ double PSO(
   double cognition_parameter = cogP; //0.5
   double social_parameter = socP;   // 0.5
 
-  // int max_threads = omp_get_max_threads();
-  int max_threads = OMP_NUM_THREADS;
-  if (max_threads == 0) max_threads = 1;
+  int max_threads = omp_get_max_threads();
+  cout << max_threads << endl;
+  // int max_threads = OMP_NUM_THREADS;
+  // if (max_threads == 0) max_threads = 1;
 
   vector<mt19937> rng_engines(max_threads);
   for (int i = 0; i < max_threads; ++i) {
@@ -148,13 +149,15 @@ functionEvaluations = 0;
   best_particle->fitness = population[gbest]->fitness;
   for(j=0; j<dimension; j++){ best_particle->position[j] = population[gbest]->position[j];}
   
-  int iteracoes = 0, maxEval = 20000;
+  int iteracoes = 0, maxEval = dimension * 10;
   cout << "COMECOU" <<  endl;
+
+  #pragma omp parallel num_threads(max_threads)
   while(functionEvaluations < maxEval){
     bool successful = false;
     weight = initialWeight - (initialWeight - finalWeight)*((double)functionEvaluations)/((double)maxEval);
 
-    #pragma omp parallel for num_threads(max_threads)
+    #pragma omp for
     for(int i=0; i<number_particles; i++){
       int thread_id = omp_get_thread_num();
       mt19937& my_rng = rng_engines[thread_id];
