@@ -5,7 +5,6 @@
 #include "pso.h"
 #include "Solution.h"
 
-#define NUMPARTICLES 500
 #define MAX_DELTA 0.00001
 //#define INF 3.40282347E+38F
 #define INF 1E+21
@@ -21,7 +20,8 @@ double generate_ramdom() {
 
 double PSO(
     double (*objfun)(double*), 
-    int dimension, 
+    int dimension,
+    int n_pop, 
     int seed, 
     double *lb, 
     double *ub, 
@@ -32,12 +32,12 @@ double PSO(
 ){
         
   functionEvaluations = 0;
-  int number_particles = NUMPARTICLES;
+  int number_particles = n_pop;
 
   int i, j;
   srand(seed);
 
-  Particle **population = new Particle*[NUMPARTICLES];
+  Particle **population = new Particle*[number_particles];
   Particle *best_particle = new Particle();
 
   double limit;
@@ -101,7 +101,7 @@ double PSO(
   best_particle->fitness = population[gbest]->fitness;
   for(j=0; j<dimension; j++){ best_particle->position[j] = population[gbest]->position[j];}
   
-  int iteracoes = 0, maxEval = dimension * 10;
+  int iteracoes = 0, maxEval = n_pop * 100;
   cout << "COMECOU" <<  endl;
   while(functionEvaluations < maxEval){
       bool successful = false;

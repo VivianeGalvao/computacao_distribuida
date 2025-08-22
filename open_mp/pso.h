@@ -4,13 +4,16 @@
 
 
 double PSO(double (*objfun)(double*), 
-    int dimension, 
+    int dimension,
+    int n_pop,
     int seed, double *lb, 
     double *ub, 
     double iW, 
     double fW, 
     double cogP, 
-    double socP);
+    double socP,
+    int num_threads
+);
 
 
 

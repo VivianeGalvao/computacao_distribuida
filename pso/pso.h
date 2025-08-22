@@ -4,7 +4,8 @@
 
 
 double PSO(double (*objfun)(double*), 
-    int dimension, 
+    int dimension,
+    int n_pop,
     int seed, double *lb, 
     double *ub, 
     double iW, 

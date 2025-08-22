@@ -8,9 +8,7 @@
 #include "pso.h"
 #include "Solution.h"
 
-#define NUMPARTICLES 500
 #define MAX_DELTA 0.00001
-#define OMP_NUM_THREADS 2
 //#define INF 3.40282347E+38F
 #define INF 1E+21
 
@@ -43,36 +41,26 @@ void print_individual(Particle* individual, int dimension) {
 
 double PSO(
     double (*objfun)(double*), 
-    int dimension, 
+    int dimension,
+    int n_pop,
     int seed, 
     double *lb, 
     double *ub, 
     double iW, 
     double fW, 
     double cogP, 
-    double socP
+    double socP,
+    int num_threads
 ){
         
   int functionEvaluations = 0;
-  int number_particles = NUMPARTICLES;
+  int number_particles = n_pop;
 
   int i, j;
   srand(seed);
 
-  Particle **population = new Particle*[NUMPARTICLES];
+  Particle **population = new Particle*[number_particles];
   Particle *best_particle = new Particle();
-
-  double limit;
-  double mindelta = INF;
-  if(lb && ub){
-    for(i = 0; i<dimension; i++){
-	    if(mindelta > (ub[i] - lb[i])){ 
-            mindelta = ub[i] - lb[i]; 
-        }
-    }
-  }
-  if(mindelta >=INF || mindelta <= MAX_DELTA){ limit = 2*sqrt(sqrt(MAX_DELTA)); }
-  else{ limit = mindelta/5;}
 
     //velocity parameters
   double initialWeight = iW, finalWeight = fW; //double initialWeight = 0.9, finalWeight = 0.4;
@@ -80,10 +68,9 @@ double PSO(
   double cognition_parameter = cogP; //0.5
   double social_parameter = socP;   // 0.5
 
-  int max_threads = omp_get_max_threads();
-  cout << max_threads << endl;
-  // int max_threads = OMP_NUM_THREADS;
-  // if (max_threads == 0) max_threads = 1;
+
+  int max_threads = num_threads;
+  if (max_threads == 0) max_threads = 1;
 
   vector<mt19937> rng_engines(max_threads);
   for (int i = 0; i < max_threads; ++i) {
@@ -98,7 +85,8 @@ double PSO(
     population[i]->velocity = new double[dimension];
     population[i]->best_position = new double[dimension];  
   }
-  //initialize a population of particles with random positions and velocities
+
+  // initialize a population of particles with random positions and velocities
 #pragma omp parallel for num_threads(max_threads)
   for(int i = 0; i<number_particles; i++){
     
@@ -117,23 +105,12 @@ double PSO(
       population[i]->best_position[j] = population[i]->position[j];
     //velocity paramenters
     }
+    population[i]->fitness = objfun(population[i]->position);
+    population[i]->best_fitness = population[i]->fitness;
     // print_individual(population[i], dimension);    
   }
   //initialize fitness values
-
-
-functionEvaluations = 0;
-#pragma omp parallel for num_threads(max_threads) reduction(+:functionEvaluations)
-  for(int i=0; i<number_particles; i++){
-      int my_rank = omp_get_thread_num();
-      population[i]->fitness = objfun(population[i]->position);
-      functionEvaluations = functionEvaluations + 1;
-      population[i]->best_fitness = population[i]->fitness;
-      // printf("Hello from thread %d of %d.", my_rank, omp_get_num_threads(), population[i]->fitness);
-      // print_individual(population[i], dimension);
-  }
-  //population intialized
-  // cout << "Function evaluations: " << functionEvaluations << endl;
+  functionEvaluations = functionEvaluations + number_particles;
 
   int gbest = 0;
   best_particle->fitness = population[0]->fitness;
@@ -149,15 +126,20 @@ functionEvaluations = 0;
   best_particle->fitness = population[gbest]->fitness;
   for(j=0; j<dimension; j++){ best_particle->position[j] = population[gbest]->position[j];}
   
-  int iteracoes = 0, maxEval = dimension * 10;
-  cout << "COMECOU" <<  endl;
+  int iteracoes = 0;
+  int maxEval = number_particles * 100;
+  cout << "COMECOU " <<  "max_threads: " << max_threads << endl;
 
-  #pragma omp parallel num_threads(max_threads)
-  while(functionEvaluations < maxEval){
+  #pragma omp parallel num_threads(max_threads) \
+    default(none) reduction(+: functionEvaluations) shared(number_particles, best_particle, population, cognition_parameter, social_parameter, initialWeight, finalWeight, maxEval, dimension, objfun, lb, ub, rng_engines) \
+    private(i, j, weight, gbest, iteracoes)
+  // while(functionEvaluations < maxEval){
+  for (iteracoes = 0; functionEvaluations < maxEval; iteracoes++){
     bool successful = false;
     weight = initialWeight - (initialWeight - finalWeight)*((double)functionEvaluations)/((double)maxEval);
 
     #pragma omp for
+    // #pragma omp parallel for num_threads(max_threads)
     for(int i=0; i<number_particles; i++){
       int thread_id = omp_get_thread_num();
       mt19937& my_rng = rng_engines[thread_id];
@@ -177,14 +159,12 @@ functionEvaluations = 0;
           if(population[i]->position[j] < lb[j]){ population[i]->position[j] = lb[j]; }
           if(population[i]->position[j] > ub[j]){ population[i]->position[j] = ub[j]; }
         }
+      population[i]->fitness = objfun(population[i]->position);
       }
     }
 
-    #pragma omp parallel for num_threads(max_threads) reduction(+:functionEvaluations)
-    for(int i=0; i<number_particles; i++){
-      population[i]->fitness = objfun(population[i]->position);
-      functionEvaluations = functionEvaluations + 1;
-    }
+    functionEvaluations = functionEvaluations + number_particles;
+
     // cout << "Function evaluations: " << functionEvaluations << endl;
 
     for(int i=0; i<number_particles && functionEvaluations < maxEval; i++){
@@ -206,6 +186,7 @@ functionEvaluations = 0;
   //   cout << "Best particle" << endl;
   //   print_individual(best_particle, dimension);
   //   cout << endl;
+
   }
 
   // for(int i=0; i<dimension; i++){

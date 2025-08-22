@@ -4,11 +4,9 @@
 #!/bin/bash
 
 # Define the number of runs
-NUM_RUNS=30
-# Define the number of processes for MPI
-NUM_PROCS=4
+NUM_RUNS=10
 # Define the output CSV file
-OUTPUT_FILE="pso_execution_times_10000.csv"
+OUTPUT_FILE="pso_execution_times.csv"
 
 # Check if the C++ source file exists
 if [ ! -f "pso.cpp" ]; then
@@ -25,25 +23,37 @@ fi
 echo "Compilation successful. Executable 'pso' created."
 
 # Add a header to the CSV file
-echo "run_number,execution_time" > "$OUTPUT_FILE"
+echo "dimension,n_pop,run_number,execution_time" > "$OUTPUT_FILE"
 
 echo "Starting $NUM_RUNS runs..."
 
 # Loop to run the program multiple times
-for i in $(seq 1 $NUM_RUNS)
+
+for dimension in 10 100 1000 10000
 do
-    echo "Running iteration $i of $NUM_RUNS..."
-    
-    # Capture the output of the time command by redirecting stderr to stdout
-    TIME_STR=$( { time -f '%e' ./pso >/dev/null; } 2>&1 )
-    
-    # Trim leading/trailing whitespace from the captured time string
-    TIME_STR=$(echo "$TIME_STR" | xargs)
-    
-    echo "Execution time: $TIME_STR seconds"
-    
-    # Add the run number and execution time to the CSV
-    echo "$i,$TIME_STR" >> "$OUTPUT_FILE"
+    for n_pop in 10 50 100 500
+    do
+        for i in $(seq 1 $NUM_RUNS)
+        do  
+            echo "Running PSO with dimension $dimension and population size $n_pop..."
+            echo "Running iteration $i of $NUM_RUNS..."
+
+            start_time=$(date +%s%3N)
+            # Capture the output of the time command by redirecting stderr to stdout
+            #TIME_STR=$( { time -q -f '%e' ./pso $dimension $n_pop >/dev/null; } 2>&1 )
+            ./pso $dimension $n_pop >/dev/null
+            # Trim leading/trailing whitespace from the captured time string
+            #TIME_STR=$(echo "$TIME_STR" | xargs)
+            end_time=$(date +%s%3N)
+            
+            TIME_STR=$((end_time - start_time))
+
+            echo "Execution time: $TIME_STR milliseconds"
+            
+            # Add the run number and execution time to the CSV
+            echo "$dimension,$n_pop,$i,$TIME_STR" >> "$OUTPUT_FILE"
+        done
+    done
 done
 
 echo "All runs completed. Results stored in $OUTPUT_FILE."
