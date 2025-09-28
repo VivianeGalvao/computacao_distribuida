@@ -4,7 +4,7 @@
 # Define the number of runs
 NUM_RUNS=10
 # Define the output CSV file
-OUTPUT_FILE="pso_execution_times.csv"
+OUTPUT_FILE="pso_execution_times_cuda_p2.csv"
 
 # Check if the C++ source file exists
 if [ ! -f "pso.cu" ]; then
@@ -13,7 +13,7 @@ if [ ! -f "pso.cu" ]; then
 fi
 
 # Compile the C++ program
-echo "Compiling pso.cpp..."
+echo "Compiling pso.cu..."
 if ! nvcc pso.cu -o pso -arch=sm_60 -DFLOAT -DFORUM; then
     echo "Compilation failed."
     exit 1
@@ -26,12 +26,13 @@ echo "dimension,n_pop,n_thread,n_block,run_number,best_value,execution_time" > "
 echo "Starting $NUM_RUNS runs..."
 
 # Use a POSIX-compliant for loop
-for dimension in 512 1024 8192 16384
+for dimension in 512 1024 2048 4096 8192
 do
     for n_pop in 64 128 256 512
     do
         for threads in 128 256 512
         do
+            nvcc pso.cu -o pso
             for i in $(seq 1 $NUM_RUNS)
             do
                 echo "Running: Dim=$dimension, Pop=$n_pop, Threads=$threads, Run=$i/$NUM_RUNS"

@@ -12,19 +12,20 @@
 #define INF (1e38f*1e38f)
 
 #define SEED 42
-#define DIMENSION 64
-#define NUMPARTICLES 32
+#define DIMENSION 2
+#define NUMPARTICLES 256
+#define NTHREADS 512
 
 using namespace std;
 
-__constant__ double pso_lower_bound;
-__constant__ double pso_upper_bound;
-__constant__ double pso_inertial_weight;
-__constant__ double pso_cognitive_param;
-__constant__ double pso_social_param;
+__constant__ float pso_lower_bound;
+__constant__ float pso_upper_bound;
+__constant__ float pso_inertial_weight;
+__constant__ float pso_cognitive_param;
+__constant__ float pso_social_param;
 
 
-__global__ void update_global_best(float *fitness, double *global_best_fit, int n_pop) {
+__global__ void update_global_best(float *fitness, float *global_best_fit, int n_pop) {
 
     int size = n_pop;
     extern __shared__ float min_values[];
@@ -39,7 +40,7 @@ __global__ void update_global_best(float *fitness, double *global_best_fit, int 
 
     for (int stride = blockDim.x / 2; stride > 0; stride /= 2) {
         if (tid < stride) {
-            min_values[tid] = min(min_values[tid], min_values[tid + stride]);
+            min_values[tid] = min_values[tid] < min_values[tid + stride] ? min_values[tid] : min_values[tid + stride];   //min(min_values[tid], min_values[tid + stride]);
         }
         __syncthreads();
     }
@@ -50,11 +51,8 @@ __global__ void update_global_best(float *fitness, double *global_best_fit, int 
 }
 
 __global__ void calc_fitness(
-    double *population,
-    double *best_pos,
+    float *population,
     float *fitness,
-    float *best_fit,
-    double *global_best_fit,
     int n_pop,
     int dimension
 ){
@@ -67,28 +65,49 @@ __global__ void calc_fitness(
     while (i < size){
         float val = population[i];
         particle = i / dimension;
-        atomicAdd(&fitness[particle], val*val);
-        i+=stride;
-    }
-    __syncthreads();
-
-    i = threadIdx.x + blockIdx.x * blockDim.x;
-    while (i < size){
-        particle = i / dimension;
-        best_pos[i] = fitness[particle] < best_fit[particle] ? population[i] : best_pos[i];
-        i+=stride;
-    }
-
-    i = threadIdx.x + blockIdx.x * blockDim.x;
-    while (i < size){
-        particle = i / dimension;
-        best_fit[particle] = fitness[particle] < best_fit[particle] ? fitness[particle] : best_fit[particle];
+        atomicAdd(&fitness[particle], (val-2.0)*(val-2.0));
         i+=stride;
     }
 }
 
 
-__global__ void init_population(double *population, double *best_pos, int seed, int popsize, int dimension) {
+__global__ void update_best_positions(
+    float *population,
+    float *best_pos,
+    float *fitness,
+    float *best_fit,
+    int n_pop,
+    int dimension
+){
+
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    int stride = blockDim.x * gridDim.x;
+    int particle;
+    int size = n_pop * dimension;
+
+    while (i < size){
+        particle = i / dimension;
+        best_pos[i] = fitness[particle] < best_fit[particle] ? population[i] : best_pos[i];
+        i+=stride;
+    }
+}
+
+__global__ void update_best_fitness(
+    float *fitness,
+    float *best_fit,
+    int n_pop
+){
+
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    int stride = blockDim.x * gridDim.x;
+
+    while (i < n_pop){
+        best_fit[i] = fitness[i] < best_fit[i] ? fitness[i] : best_fit[i];
+        i+=stride;
+    }
+}
+
+__global__ void init_population(float *population, float *best_pos, int seed, int popsize, int dimension) {
 
     int total_dimension = popsize * dimension;
     int i = threadIdx.x + blockIdx.x * blockDim.x;
@@ -105,10 +124,10 @@ __global__ void init_population(double *population, double *best_pos, int seed, 
 }
 
 __global__ void update_positions(
-    double *population,
-    double *velocity,
-    double *best_pos,
-    double *global_best,
+    float *population,
+    float *velocity,
+    float *best_pos,
+    float *global_best,
     int seed,
     int n_pop,
     int dimension) {
@@ -116,6 +135,7 @@ __global__ void update_positions(
     int total_dimension = n_pop * dimension;
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     int stride = blockDim.x * gridDim.x;
+    int dim;
 
     while (i < total_dimension){
         curandState_t state;
@@ -124,9 +144,11 @@ __global__ void update_positions(
         float r1 = curand_uniform(&state);
         float r2 = curand_uniform(&state);
 
+        dim = i % dimension;
+
         velocity[i] = (pso_inertial_weight*velocity[i]) + \
                         (pso_cognitive_param*r1*(best_pos[i] - population[i])) + \
-                        (pso_social_param*r2*(global_best[i] - population[i]));
+                        (pso_social_param*r2*(global_best[dim] - population[i]));
 
         population[i] = population[i] + velocity[i];
         population[i] = population[i] < pso_lower_bound ? pso_lower_bound : population[i];
@@ -136,12 +158,12 @@ __global__ void update_positions(
     }
 }
 
-void print_population(double* dev_population, int pop_size) {
-    double *h_population = (double*)malloc(pop_size * sizeof(double));
+void print_population(float* dev_population, int pop_size) {
+    float *h_population = (float*)malloc(pop_size * sizeof(float));
     cudaMemcpy(
         h_population,
         dev_population,
-        pop_size * sizeof(double),
+        pop_size * sizeof(float),
         cudaMemcpyDeviceToHost
     );
     for (int i = 0; i < pop_size; i++) {
@@ -159,7 +181,7 @@ void print_fitness(float* dev_fitness, int n_pop){
     free(h_fitness);
 }
 
-void print_best_local_fitness(double* dev_best_fit, int n_pop){
+void print_best_local_fitness(float* dev_best_fit, int n_pop){
     float *h_best_fitness = (float*)malloc(n_pop * sizeof(float));
     cudaMemcpy(h_best_fitness, dev_best_fit, n_pop * sizeof(float), cudaMemcpyDeviceToHost);
     for (int i = 0; i < n_pop; i++) {
@@ -168,12 +190,12 @@ void print_best_local_fitness(double* dev_best_fit, int n_pop){
     free(h_best_fitness);
 }
 
-void print_best_position(double* dev_best_pos, int pop_size){
-    double *h_best_pop = (double*)malloc(pop_size * sizeof(double));
+void print_best_position(float* dev_best_pos, int pop_size){
+    float *h_best_pop = (float*)malloc(pop_size * sizeof(float));
     cudaMemcpy(
         h_best_pop,
         dev_best_pos,
-        pop_size * sizeof(double),
+        pop_size * sizeof(float),
         cudaMemcpyDeviceToHost
     );
     for (int i = 0; i < pop_size; i++) {
@@ -182,20 +204,29 @@ void print_best_position(double* dev_best_pos, int pop_size){
     free(h_best_pop);
 }
 
+void print_best_global_position(float* dev_global_best_pos, int dimension){
+    float *h_global_best_pos = (float*)malloc(dimension * sizeof(float));
+    cudaMemcpy(
+        h_global_best_pos,
+        dev_global_best_pos,
+        dimension * sizeof(float),
+        cudaMemcpyDeviceToHost
+    );
+    for (int i = 0; i < dimension; i++) {
+        printf("global best pos[%d] = %f\n", i, h_global_best_pos[i]);
+    }
+    free(h_global_best_pos);
+}
+
 int main(int argc, char **argv){
 
     float tempo_total_acumulado = 0.0f;
     float milliseconds = 0;
-
-    int dimension = DIMENSION;
-    int n_pop = NUMPARTICLES;
-    int run_number = 1;
     int seed = SEED;
+    float h_global_best_fitness;
 
-    const int pop_size = dimension * n_pop;
-    int threads = DIMENSION;
-
-    // echo "$dimension,$n_pop,$threads,$i,$TIME_STR"
+    int dimension, n_pop, run_number, threads;
+    bool verbose;
 
     if (argc > 1) {
         // If command line arguments are provided, use them to set parameters
@@ -203,33 +234,52 @@ int main(int argc, char **argv){
         n_pop = atoi(argv[2]);
         threads = atoi(argv[3]);
         run_number = atoi(argv[4]);
+        verbose = false;
+    }
+    else{
+        dimension = DIMENSION;
+        n_pop = NUMPARTICLES;
+        run_number = 0;
+        threads = NTHREADS;
+        verbose = false;
     }
 
-    int blocks = (n_pop + threads - 1) / threads;
+    const int pop_size = dimension * n_pop;
+    int blocks = (pop_size + threads - 1) / threads;
+
+    float *h_best_fitness = (float*)malloc(n_pop * sizeof(float));
+    float *h_best_pop = (float*)malloc(pop_size * sizeof(float));
+
+
+    if(verbose){
+        printf("Running PSO with dimension=%d, n_pop=%d, threads=%d, blocks=%d, pop_size=%d\n", dimension, n_pop, threads, blocks, pop_size);
+    }
 
     //memoria de constantes
-    double h_lb = -5, h_ub = 5, h_IW = 0.4, h_CP = 0.5, h_SP = 0.5;
-    cudaMemcpyToSymbol(pso_lower_bound, &h_lb, sizeof(double));
-    cudaMemcpyToSymbol(pso_upper_bound, &h_ub, sizeof(double));
-    cudaMemcpyToSymbol(pso_inertial_weight, &h_IW, sizeof(double));
-    cudaMemcpyToSymbol(pso_cognitive_param, &h_CP, sizeof(double));
-    cudaMemcpyToSymbol(pso_social_param, &h_SP, sizeof(double));
+    float h_lb = -5, h_ub = 5, h_IW = 0.7, h_CP = 0.5, h_SP = 0.5;
+    cudaMemcpyToSymbol(pso_lower_bound, &h_lb, sizeof(float));
+    cudaMemcpyToSymbol(pso_upper_bound, &h_ub, sizeof(float));
+    cudaMemcpyToSymbol(pso_inertial_weight, &h_IW, sizeof(float));
+    cudaMemcpyToSymbol(pso_cognitive_param, &h_CP, sizeof(float));
+    cudaMemcpyToSymbol(pso_social_param, &h_SP, sizeof(float));
 
     // population, velocity
-    double *dev_population, *dev_velocity, *dev_best_pos;
-    double *dev_global_best, *dev_global_best_fitness;
-    cudaMalloc((void**)&dev_population, pop_size * sizeof(double));
-    cudaMalloc((void**)&dev_velocity, pop_size * sizeof(double));
-    cudaMalloc((void**)&dev_best_pos, pop_size * sizeof(double));
-    cudaMalloc((void**)&dev_global_best, dimension * sizeof(double));
-    cudaMalloc((void**)&dev_global_best_fitness, sizeof(double));
+    float *dev_population, *dev_velocity, *dev_best_pos;
+    cudaMalloc((void**)&dev_population, pop_size * sizeof(float));
+    cudaMalloc((void**)&dev_velocity, pop_size * sizeof(float));
+    cudaMalloc((void**)&dev_best_pos, pop_size * sizeof(float));
+
+    float *dev_global_best_pos, *dev_global_best_fitness;
+    cudaMalloc((void**)&dev_global_best_pos, dimension * sizeof(float));
+    cudaMalloc((void**)&dev_global_best_fitness, sizeof(float));
 
     float *dev_fitness, *dev_best_fit;
     cudaMalloc((void**)&dev_fitness, n_pop * sizeof(float));
     cudaMalloc((void**)&dev_best_fit, n_pop * sizeof(float));
 
-    // inicializa velocidade inicial com 0
-    cudaMemset(dev_velocity, 0.0f, pop_size * sizeof(double));
+    // inicializa velocidade e melhores posições com 0
+    cudaMemset(dev_velocity, 0.0f, pop_size * sizeof(float));
+    cudaMemset(dev_global_best_pos, 0.0f, dimension * sizeof(float));
 
     // inicializa fitness com zero e best individuals fitness com infinito
     float *h_fitness_init = (float*)malloc(n_pop * sizeof(float));
@@ -253,11 +303,11 @@ int main(int argc, char **argv){
     free(h_fitness_init);
     free(h_best_fitness_init);
 
-    double h_inf = INF;
+    float h_inf = INF;
     cudaMemcpy(
         dev_global_best_fitness,
         &h_inf,
-        sizeof(double),
+        sizeof(float),
         cudaMemcpyHostToDevice
     );
 
@@ -274,14 +324,57 @@ int main(int argc, char **argv){
         dimension
     );
 
-    calc_fitness<<<blocks, threads, n_pop * sizeof(double)>>>(
+    calc_fitness<<<blocks, threads>>>(
+        dev_population,
+        dev_fitness,
+        n_pop,
+        dimension
+    );
+
+    update_best_positions<<<blocks, threads>>>(
         dev_population,
         dev_best_pos,
         dev_fitness,
         dev_best_fit,
-        dev_global_best_fitness,
         n_pop,
         dimension
+    );
+
+    int fbest_blocks = (n_pop + threads - 1) / threads;
+    update_best_fitness<<<fbest_blocks, threads>>>(
+        dev_fitness,
+        dev_best_fit,
+        n_pop
+    );
+
+    float min_value = INF;
+    int min_index = -1;
+    cudaMemcpy(
+        h_best_pop,
+        dev_best_pos,
+        pop_size * sizeof(float),
+        cudaMemcpyDeviceToHost
+    );
+    cudaMemcpy(
+        h_best_fitness,
+        dev_best_fit,
+        n_pop * sizeof(float),
+        cudaMemcpyDeviceToHost
+    );
+
+
+    for (int i = 0; i < n_pop; i++) {
+        if (h_best_fitness[i] < min_value) {
+            min_value = h_best_fitness[i];
+            min_index = i;
+        }
+    }
+
+    cudaMemcpy(
+        dev_global_best_pos,
+        &h_best_pop[min_index * dimension],
+        dimension * sizeof(float),
+        cudaMemcpyHostToDevice
     );
 
     update_global_best<<<1, n_pop, n_pop * sizeof(float)>>>(
@@ -290,48 +383,9 @@ int main(int argc, char **argv){
         n_pop
     );
 
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    milliseconds = 0;
-    cudaEventElapsedTime(&milliseconds, start, stop);
-    tempo_total_acumulado += milliseconds;
-
-    double h_global_best_fitness;
-    // cudaMemcpy(&h_global_best_fitness, dev_global_best_fitness, sizeof(double), cudaMemcpyDeviceToHost);
-    // printf("Global best fitness: %f\n", h_global_best_fitness);
-
-    int generations = 10;
-    int iter = 0;
-    cudaEventRecord(start);
-    while (iter < generations) {
-        update_positions<<<blocks, threads>>>(
-            dev_population,
-            dev_velocity,
-            dev_best_pos,
-            dev_global_best,
-            seed+iter,
-            n_pop,
-            dimension
-        );
-
-        cudaMemset(dev_fitness, 0.0f, n_pop * sizeof(float));
-        calc_fitness<<<blocks, threads, n_pop * sizeof(double)>>>(
-            dev_population,
-            dev_best_pos,
-            dev_fitness,
-            dev_best_fit,
-            dev_global_best_fitness,
-            n_pop,
-            dimension
-        );
-
-        update_global_best<<<1, n_pop, n_pop * sizeof(float)>>>(
-            dev_fitness,
-            dev_global_best_fitness,
-            n_pop
-        );
-        iter++;
-        // printf("Iteracao %d\n", iter);
+    if (verbose){
+        cudaMemcpy(&h_global_best_fitness, dev_global_best_fitness, sizeof(float), cudaMemcpyDeviceToHost);
+        printf("Global best fitness: %f\n", h_global_best_fitness);
     }
 
     cudaEventRecord(stop);
@@ -340,19 +394,111 @@ int main(int argc, char **argv){
     cudaEventElapsedTime(&milliseconds, start, stop);
     tempo_total_acumulado += milliseconds;
 
-    cudaMemcpy(&h_global_best_fitness, dev_global_best_fitness, sizeof(double), cudaMemcpyDeviceToHost);
-    // printf("Global best fitness: %f\n", h_global_best_fitness);
-    // printf("Tempo total (ms): %f\n", tempo_total_acumulado);
-    // "dimension,n_pop,n_thread,n_block,run_number,execution_time":
-    printf("%d,%d,%d,%d,%d,%f,%.5f\n", dimension, n_pop, threads, blocks, run_number, h_global_best_fitness,tempo_total_acumulado);
+    int generations = 100;
+    int iter = 0;
+    cudaEventRecord(start);
+    while (iter < generations) {
+        update_positions<<<blocks, threads>>>(
+            dev_population,
+            dev_velocity,
+            dev_best_pos,
+            dev_global_best_pos,
+            seed+iter,
+            n_pop,
+            dimension
+        );
 
+        cudaMemset(dev_fitness, 0.0f, n_pop * sizeof(float));
+        calc_fitness<<<blocks, threads, n_pop * sizeof(float)>>>(
+            dev_population,
+            dev_fitness,
+            n_pop,
+            dimension
+        );
+
+        update_best_positions<<<blocks, threads>>>(
+            dev_population,
+            dev_best_pos,
+            dev_fitness,
+            dev_best_fit,
+            n_pop,
+            dimension
+        );
+
+        update_best_fitness<<<fbest_blocks, threads>>>(
+            dev_fitness,
+            dev_best_fit,
+            n_pop
+        );
+
+        if(verbose){
+            print_fitness(dev_fitness, n_pop);
+            print_best_local_fitness(dev_best_fit, n_pop);
+            print_population(dev_population, pop_size);
+        }
+
+        update_global_best<<<1, n_pop, n_pop * sizeof(float)>>>(
+            dev_fitness,
+            dev_global_best_fitness,
+            n_pop
+        );
+
+        cudaMemcpy(
+            h_best_pop,
+            dev_best_pos,
+            pop_size * sizeof(float),
+            cudaMemcpyDeviceToHost
+        );
+        cudaMemcpy(
+            h_best_fitness,
+            dev_best_fit,
+            n_pop * sizeof(float),
+            cudaMemcpyDeviceToHost
+        );
+
+
+        for (int i = 0; i < n_pop; i++) {
+            if (h_best_fitness[i] < min_value) {
+                min_value = h_best_fitness[i];
+                min_index = i;
+            }
+        }
+
+        cudaMemcpy(
+            dev_global_best_pos,
+            &h_best_pop[min_index * dimension],
+            dimension * sizeof(float),
+            cudaMemcpyHostToDevice
+        );
+
+        if(verbose && (iter % 10 == 0)){
+            cudaMemcpy(&h_global_best_fitness, dev_global_best_fitness, sizeof(float), cudaMemcpyDeviceToHost);
+            printf("\nGlobal best fitness: %f\n", h_global_best_fitness);
+            print_best_global_position(dev_global_best_pos, dimension);
+        }
+
+        iter++;
+    }
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, start, stop);
+    tempo_total_acumulado += milliseconds;
+
+    cudaMemcpy(&h_global_best_fitness, dev_global_best_fitness, sizeof(float), cudaMemcpyDeviceToHost);
+    printf("%d,%d,%d,%d,%d,%f,%.5f\n", dimension, n_pop, threads, blocks, run_number, h_global_best_fitness,tempo_total_acumulado);
 
     cudaFree(dev_population);
     cudaFree(dev_velocity);
     cudaFree(dev_best_pos);
     cudaFree(dev_best_fit);
     cudaFree(dev_fitness);
-    cudaFree(dev_global_best);
+    cudaFree(dev_global_best_pos);
+    cudaFree(dev_global_best_fitness);
+
+    free(h_best_fitness);
+    free(h_best_pop);
 
     return 0;
 
