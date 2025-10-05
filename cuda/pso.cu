@@ -12,8 +12,8 @@
 #define INF (1e38f*1e38f)
 
 #define SEED 42
-#define DIMENSION 2
-#define NUMPARTICLES 256
+#define DIMENSION 8192
+#define NUMPARTICLES 512
 #define NTHREADS 512
 
 using namespace std;
@@ -24,6 +24,50 @@ __constant__ float pso_inertial_weight;
 __constant__ float pso_cognitive_param;
 __constant__ float pso_social_param;
 
+
+__global__ void find_global_best_and_update_pos(
+    float* best_fit,
+    float* best_pos,
+    float* global_best_fit,
+    float* global_best_pos,
+    int n_pop,
+    int dimension
+) {
+    extern __shared__ char s_mem[];
+    float* min_values = (float*)s_mem;
+    int* argmin_values = (int*)(min_values + blockDim.x);
+
+    int tid = threadIdx.x;
+
+    if (tid < n_pop) {
+        min_values[tid] = best_fit[tid];
+        argmin_values[tid] = tid;
+    } else {
+        min_values[tid] = INF;
+        argmin_values[tid] = -1;
+    }
+    __syncthreads();
+
+    for (int stride = blockDim.x / 2; stride > 0; stride /= 2) {
+        if (tid < stride) {
+            if (min_values[tid + stride] < min_values[tid]) {
+                min_values[tid] = min_values[tid + stride];
+                argmin_values[tid] = argmin_values[tid + stride];
+            }
+        }
+        __syncthreads();
+    }
+
+    if (tid == 0) {
+        if (min_values[0] < *global_best_fit) {
+            *global_best_fit = min_values[0];
+            int best_particle_id = argmin_values[0];
+            for (int d = 0; d < dimension; ++d) {
+                global_best_pos[d] = best_pos[best_particle_id * dimension + d];
+            }
+        }
+    }
+}
 
 __global__ void update_global_best(float *fitness, float *global_best_fit, int n_pop) {
 
@@ -56,20 +100,19 @@ __global__ void calc_fitness(
     int n_pop,
     int dimension
 ){
-
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    int particle =  threadIdx.x + blockIdx.x * blockDim.x;
     int stride = blockDim.x * gridDim.x;
-    int particle;
-    int size = n_pop * dimension;
 
-    while (i < size){
-        float val = population[i];
-        particle = i / dimension;
-        atomicAdd(&fitness[particle], (val-2.0)*(val-2.0));
-        i+=stride;
+    while(particle < n_pop){
+        float fit = 0.0f;
+        for (int d = 0; d < dimension; d++){
+            float val = population[particle * dimension + d];
+            fit += (val-2.0f)*(val-2.0f);
+        }
+        fitness[particle] = fit;
+        particle+=stride;
     }
 }
-
 
 __global__ void update_best_positions(
     float *population,
@@ -107,17 +150,14 @@ __global__ void update_best_fitness(
     }
 }
 
-__global__ void init_population(float *population, float *best_pos, int seed, int popsize, int dimension) {
+__global__ void init_population(float *population, float *best_pos, float *random_numbers, int seed, int popsize, int dimension) {
 
     int total_dimension = popsize * dimension;
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     int stride = blockDim.x * gridDim.x;
 
     while (i < total_dimension) {
-        curandState_t state;
-        curand_init(seed, i, 0, &state);
-
-        float random_value = curand_uniform(&state);
+        float random_value = random_numbers[i];
         population[i] = (pso_upper_bound - pso_lower_bound)*random_value + pso_lower_bound;
         i += stride;
     }
@@ -128,7 +168,7 @@ __global__ void update_positions(
     float *velocity,
     float *best_pos,
     float *global_best,
-    int seed,
+    float *random_numbers,
     int n_pop,
     int dimension) {
 
@@ -138,11 +178,9 @@ __global__ void update_positions(
     int dim;
 
     while (i < total_dimension){
-        curandState_t state;
-        curand_init(seed, i, 0, &state);
 
-        float r1 = curand_uniform(&state);
-        float r2 = curand_uniform(&state);
+        float r1 = random_numbers[i];
+        float r2 = random_numbers[i + total_dimension];
 
         dim = i % dimension;
 
@@ -277,6 +315,10 @@ int main(int argc, char **argv){
     cudaMalloc((void**)&dev_fitness, n_pop * sizeof(float));
     cudaMalloc((void**)&dev_best_fit, n_pop * sizeof(float));
 
+    float* dev_random_numbers;
+    const int num_random_values = pop_size * 2;
+    cudaMalloc((void**)&dev_random_numbers, num_random_values * sizeof(float));
+
     // inicializa velocidade e melhores posições com 0
     cudaMemset(dev_velocity, 0.0f, pop_size * sizeof(float));
     cudaMemset(dev_global_best_pos, 0.0f, dimension * sizeof(float));
@@ -311,14 +353,21 @@ int main(int argc, char **argv){
         cudaMemcpyHostToDevice
     );
 
+    curandGenerator_t rand_gen;
+    curandCreateGenerator(&rand_gen, CURAND_RNG_PSEUDO_DEFAULT);
+    curandSetPseudoRandomGeneratorSeed(rand_gen, seed);
+
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
     cudaEventRecord(start);
 
+    curandGenerateUniform(rand_gen, dev_random_numbers, num_random_values);
+
     init_population<<<blocks, threads>>>(
         dev_population,
         dev_best_pos,
+        dev_random_numbers,
         seed,
         n_pop,
         dimension
@@ -347,40 +396,13 @@ int main(int argc, char **argv){
         n_pop
     );
 
-    float min_value = INF;
-    int min_index = -1;
-    cudaMemcpy(
-        h_best_pop,
-        dev_best_pos,
-        pop_size * sizeof(float),
-        cudaMemcpyDeviceToHost
-    );
-    cudaMemcpy(
-        h_best_fitness,
+    find_global_best_and_update_pos<<<1, n_pop, 2 * n_pop * sizeof(float)>>>(
         dev_best_fit,
-        n_pop * sizeof(float),
-        cudaMemcpyDeviceToHost
-    );
-
-
-    for (int i = 0; i < n_pop; i++) {
-        if (h_best_fitness[i] < min_value) {
-            min_value = h_best_fitness[i];
-            min_index = i;
-        }
-    }
-
-    cudaMemcpy(
-        dev_global_best_pos,
-        &h_best_pop[min_index * dimension],
-        dimension * sizeof(float),
-        cudaMemcpyHostToDevice
-    );
-
-    update_global_best<<<1, n_pop, n_pop * sizeof(float)>>>(
-        dev_fitness,
+        dev_best_pos,
         dev_global_best_fitness,
-        n_pop
+        dev_global_best_pos,
+        n_pop,
+        dimension
     );
 
     if (verbose){
@@ -398,18 +420,21 @@ int main(int argc, char **argv){
     int iter = 0;
     cudaEventRecord(start);
     while (iter < generations) {
+
+        curandGenerateUniform(rand_gen, dev_random_numbers, num_random_values);
+
         update_positions<<<blocks, threads>>>(
             dev_population,
             dev_velocity,
             dev_best_pos,
             dev_global_best_pos,
-            seed+iter,
+            dev_random_numbers,
             n_pop,
             dimension
         );
 
         cudaMemset(dev_fitness, 0.0f, n_pop * sizeof(float));
-        calc_fitness<<<blocks, threads, n_pop * sizeof(float)>>>(
+        calc_fitness<<<blocks, threads>>>(
             dev_population,
             dev_fitness,
             n_pop,
@@ -437,38 +462,13 @@ int main(int argc, char **argv){
             print_population(dev_population, pop_size);
         }
 
-        update_global_best<<<1, n_pop, n_pop * sizeof(float)>>>(
-            dev_fitness,
-            dev_global_best_fitness,
-            n_pop
-        );
-
-        cudaMemcpy(
-            h_best_pop,
-            dev_best_pos,
-            pop_size * sizeof(float),
-            cudaMemcpyDeviceToHost
-        );
-        cudaMemcpy(
-            h_best_fitness,
+        find_global_best_and_update_pos<<<1, n_pop, 2 * n_pop * sizeof(float)>>>(
             dev_best_fit,
-            n_pop * sizeof(float),
-            cudaMemcpyDeviceToHost
-        );
-
-
-        for (int i = 0; i < n_pop; i++) {
-            if (h_best_fitness[i] < min_value) {
-                min_value = h_best_fitness[i];
-                min_index = i;
-            }
-        }
-
-        cudaMemcpy(
+            dev_best_pos,
+            dev_global_best_fitness,
             dev_global_best_pos,
-            &h_best_pop[min_index * dimension],
-            dimension * sizeof(float),
-            cudaMemcpyHostToDevice
+            n_pop,
+            dimension
         );
 
         if(verbose && (iter % 10 == 0)){
