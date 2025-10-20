@@ -25,6 +25,80 @@ __constant__ float pso_cognitive_param;
 __constant__ float pso_social_param;
 
 
+__global__ void find_global_best_and_update_pos_warp(
+    float* best_fit,
+    float* best_pos,
+    float* global_best_fit,
+    float* global_best_pos,
+    int n_pop,
+    int dimension
+) {
+
+    extern __shared__ char s_mem[];
+    unsigned int warp_size = 32;
+    unsigned int warps_in_block = blockDim.x / warp_size;
+    if (blockDim.x % warp_size != 0) warps_in_block++;
+
+    float* warp_min_results = (float*)s_mem;
+    int* warp_idx_results = (int*)(warp_min_results + warps_in_block);
+
+    int tid_local = threadIdx.x;
+    unsigned int lane_id = tid_local % warp_size;
+    unsigned int warp_id = tid_local / warp_size;
+
+    float my_val = (tid_local < n_pop) ? best_fit[tid_local] : INF;
+    int my_idx = tid_local;
+
+    float warp_min_val = my_val;
+    int warp_min_idx = my_idx;
+
+    unsigned int active_mask = __activemask();
+    for (int offset = warp_size / 2; offset > 0; offset /= 2) {
+        float neighbour_val = __shfl_down_sync(active_mask, warp_min_val, offset, warp_size);
+        int neighbour_idx = __shfl_down_sync(active_mask, warp_min_idx, offset, warp_size);
+
+        if (neighbour_val < warp_min_val) {
+            warp_min_val = neighbour_val;
+            warp_min_idx = neighbour_idx;
+        }
+
+        else if (neighbour_val == warp_min_val && neighbour_idx < warp_min_idx) {
+             warp_min_idx = neighbour_idx;
+        }
+    }
+
+    if (lane_id == 0) {
+        warp_min_results[warp_id] = warp_min_val;
+        warp_idx_results[warp_id] = warp_min_idx;
+    }
+
+    __syncthreads();
+
+    if (tid_local == 0) {
+        float block_min_val = INF;
+        int block_min_idx = -1;
+
+        for (unsigned int i = 0; i < warps_in_block; ++i) {
+             bool warp_processed_data = (i * warp_size < n_pop);
+             if (warp_processed_data && warp_min_results[i] < block_min_val) {
+                block_min_val = warp_min_results[i];
+                block_min_idx = warp_idx_results[i];
+            }
+            else if (warp_processed_data && warp_min_results[i] == block_min_val && warp_idx_results[i] < block_min_idx) {
+                 block_min_idx = warp_idx_results[i];
+            }
+        }
+
+        if (block_min_idx != -1 && block_min_val < *global_best_fit) {
+            *global_best_fit = block_min_val;
+            int best_particle_id = block_min_idx;
+            for (int d = 0; d < dimension; ++d) {
+                global_best_pos[d] = best_pos[best_particle_id * dimension + d];
+            }
+        }
+    }
+}
+
 __global__ void find_global_best_and_update_pos(
     float* best_fit,
     float* best_pos,
@@ -94,6 +168,35 @@ __global__ void update_global_best(float *fitness, float *global_best_fit, int n
     }
 }
 
+
+__global__ void calculate_fitness_update_bests(
+    float *population,
+    float *best_pos,
+    float *best_fit,
+    int n_pop,
+    int dimension
+) {
+    int particle = threadIdx.x + blockIdx.x * blockDim.x;
+    int stride = blockDim.x * gridDim.x;
+
+     while(particle < n_pop){
+        float fit = 0.0f;
+        int start_index = particle * dimension;
+        for (int d = 0; d < dimension; d++){
+            float val = population[start_index + d];
+            fit += (val-2.0f)*(val-2.0f);
+        }
+        if (fit < best_fit[particle]) {
+            best_fit[particle] = fit;
+            for (int d = 0; d < dimension; ++d) {
+                int index = start_index + d;
+                best_pos[index] = population[index];
+            }
+        }
+        particle+=stride;
+    }
+
+}
 __global__ void calc_fitness(
     float *population,
     float *fitness,
@@ -189,8 +292,7 @@ __global__ void update_positions(
                         (pso_social_param*r2*(global_best[dim] - population[i]));
 
         population[i] = population[i] + velocity[i];
-        population[i] = population[i] < pso_lower_bound ? pso_lower_bound : population[i];
-        population[i] = population[i] > pso_upper_bound ? pso_upper_bound : population[i];
+        population[i] = fmaxf(fminf(population[i], pso_upper_bound), pso_lower_bound);
 
         i += stride;
     }
@@ -287,6 +389,18 @@ int main(int argc, char **argv){
 
     float *h_best_fitness = (float*)malloc(n_pop * sizeof(float));
     float *h_best_pop = (float*)malloc(pop_size * sizeof(float));
+
+    int warp_size = 32;
+    int reduction_threads = NTHREADS;
+    if (n_pop < reduction_threads && n_pop > 0) {
+        reduction_threads = ( (n_pop + warp_size - 1) / warp_size ) * warp_size;
+        if (reduction_threads == 0) reduction_threads = warp_size;
+    } else if (n_pop == 0){
+        reduction_threads = warp_size;
+    }
+
+    unsigned int num_warps = (reduction_threads + warp_size - 1) / warp_size;
+    size_t shared_mem_size = num_warps * (sizeof(float) + sizeof(int));
 
 
     if(verbose){
@@ -396,7 +510,7 @@ int main(int argc, char **argv){
         n_pop
     );
 
-    find_global_best_and_update_pos<<<1, n_pop, 2 * n_pop * sizeof(float)>>>(
+    find_global_best_and_update_pos_warp<<<1, reduction_threads, shared_mem_size>>>(
         dev_best_fit,
         dev_best_pos,
         dev_global_best_fitness,
@@ -462,7 +576,7 @@ int main(int argc, char **argv){
             print_population(dev_population, pop_size);
         }
 
-        find_global_best_and_update_pos<<<1, n_pop, 2 * n_pop * sizeof(float)>>>(
+        find_global_best_and_update_pos_warp<<<1, reduction_threads, shared_mem_size>>>(
             dev_best_fit,
             dev_best_pos,
             dev_global_best_fitness,
